@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Baixador</title>
+<style>
+:root{--bg:#0f1115;--card:#181b22;--borda:#2a2f3a;--txt:#e6e8ec;--sub:#9aa3b2;--azul:#4c8dff;--verde:#2fbf71;--verm:#e5484d;--amar:#f5a524}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--txt)}
+main{max-width:920px;margin:0 auto;padding:28px 16px 60px}
+header{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
+h1{font-size:22px;margin:0}
+.sub{color:var(--sub);font-size:13px}
+.card{background:var(--card);border:1px solid var(--borda);border-radius:10px;padding:16px;margin-top:16px}
+label{display:block;font-size:13px;color:var(--sub);margin-bottom:4px}
+textarea,input[type=text],input[type=password]{width:100%;background:#0c0e12;color:var(--txt);border:1px solid var(--borda);border-radius:8px;padding:10px;font:inherit}
+textarea{min-height:150px;font-family:ui-monospace,Consolas,monospace;font-size:13px;resize:vertical}
+.linha{display:flex;gap:12px;flex-wrap:wrap;margin-top:12px}
+.linha>div{flex:1;min-width:220px}
+.check{display:flex;align-items:center;gap:8px;margin-top:12px;color:var(--sub);font-size:14px}
+button{background:var(--azul);color:#fff;border:0;border-radius:8px;padding:9px 16px;font:inherit;cursor:pointer}
+button:hover{filter:brightness(1.1)}
+button.sec{background:#2a2f3a}
+button.perigo{background:transparent;color:var(--verm);border:1px solid #5a2a2d}
+.acoes{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+#erro{color:var(--verm);margin-left:12px}
+.job-topo{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}
+.job-nome{font-weight:600}
+.selo{font-size:12px;padding:3px 9px;border-radius:99px;background:#2a2f3a}
+.selo.pronto{background:#123d27;color:var(--verde)}
+.selo.erro,.selo.cancelado,.selo.expirado{background:#3d1517;color:#ff8a8d}
+.selo.baixando,.selo.extraindo{background:#13284d;color:#8fb6ff}
+.msg{margin-top:8px;font-size:14px;color:var(--amar)}
+.item{margin-top:10px}
+.item .nome{font-size:13px;word-break:break-all}
+.barra{height:6px;background:#0c0e12;border-radius:99px;overflow:hidden;margin-top:4px}
+.barra span{display:block;height:100%;background:var(--azul);transition:width .5s}
+.barra span.ok{background:var(--verde)}
+.barra span.erro{background:var(--verm)}
+.info{font-size:12px;color:var(--sub);margin-top:3px}
+.info.erro{color:#ff8a8d}
+.link{display:flex;gap:8px;margin-top:12px}
+.link input{font-family:ui-monospace,Consolas,monospace;font-size:13px}
+details summary{cursor:pointer;color:var(--sub);font-size:13px;margin-top:10px}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Baixador</h1>
+    <span class="sub" id="disco"></span>
+  </header>
+
+  <div class="card">
+    <label for="links">Links (um por linha). Arquivos em partes são juntados e descompactados automaticamente.</label>
+    <textarea id="links" placeholder="https://exemplo.com/arquivo.part1.rar&#10;https://exemplo.com/arquivo.part2.rar"></textarea>
+    <div class="linha">
+      <div><label for="nome">Nome (opcional)</label><input type="text" id="nome" placeholder="Ex.: Backup servidor"></div>
+      <div><label for="senha">Senha do arquivo compactado (se tiver)</label><input type="password" id="senha" autocomplete="off"></div>
+    </div>
+    <label class="check"><input type="checkbox" id="apagar" checked> Apagar as partes compactadas depois de descompactar (economiza espaço)</label>
+    <div class="acoes" style="align-items:center">
+      <button id="enviar">Adicionar à fila</button><span id="erro"></span>
+    </div>
+    <p class="sub" style="margin:12px 0 0">Os links gerados valem {{ ttl|int }}h. Depois disso os arquivos são apagados sozinhos.</p>
+  </div>
+
+  <div id="jobs"></div>
+</main>
+
+<script>
+const ROTULO = {fila:'Na fila', baixando:'Baixando', extraindo:'Descompactando', pronto:'Pronto', erro:'Erro', cancelado:'Cancelado', expirado:'Expirado'};
+const anterior = {};
+
+function fmt(b){ if(b==null) return '?'; const u=['B','KB','MB','GB','TB']; let i=0; while(b>=1024&&i<4){b/=1024;i++} return b.toFixed(i?1:0)+' '+u[i]; }
+function esc(s){ return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function data(ts){ return ts ? new Date(ts*1000).toLocaleString('pt-BR',{dateStyle:'short',timeStyle:'short'}) : '-'; }
+
+function itemHtml(jid, i, idx){
+  const chave = jid+':'+idx, agora = Date.now();
+  let vel = '';
+  if(i.status==='baixando' && anterior[chave]){
+    const dt = (agora-anterior[chave].t)/1000, db = i.baixado-anterior[chave].b;
+    if(dt>0 && db>=0) vel = ' · '+fmt(db/dt)+'/s';
+  }
+  anterior[chave] = {t:agora, b:i.baixado};
+  const pct = i.status==='ok' ? 100 : (i.total ? Math.min(100, i.baixado/i.total*100) : 0);
+  let info = 'aguardando', cls = 'info';
+  if(i.status==='ok') info = '✔ '+fmt(i.total||i.baixado);
+  else if(i.status==='erro'){ info = '✖ '+esc(i.erro); cls += ' erro'; }
+  else if(i.status==='baixando') info = fmt(i.baixado)+' de '+fmt(i.total)+(i.total?' ('+pct.toFixed(0)+'%)':'')+vel+(i.erro?' · '+esc(i.erro):'');
+  return `<div class="item"><div class="nome">${esc(i.nome||i.url)}</div>
+    <div class="barra"><span class="${i.status}" style="width:${pct}%"></span></div>
+    <div class="${cls}">${info}</div></div>`;
+}
+
+function jobHtml(j){
+  const ok = j.itens.filter(i=>i.status==='ok').length;
+  const botoes = [];
+  if(['fila','baixando','extraindo'].includes(j.status)) botoes.push(`<button class="sec" onclick="acao('${j.id}','cancelar')">Cancelar</button>`);
+  if(['erro','cancelado'].includes(j.status)) botoes.push(`<button onclick="acao('${j.id}','tentar')">Tentar de novo</button>`);
+  if(j.status==='pronto') botoes.push(`<button class="sec" onclick="acao('${j.id}','renovar')">Renovar prazo</button>`);
+  botoes.push(`<button class="perigo" onclick="acao('${j.id}','excluir')">Excluir</button>`);
+  const link = j.link ? `<div class="link"><input type="text" readonly value="${esc(j.link)}" onclick="this.select()">
+      <button onclick="copiar(this,'${esc(j.link)}')">Copiar</button><a href="${esc(j.link)}" target="_blank"><button class="sec">Abrir</button></a></div>
+      <div class="sub" style="margin-top:6px">${fmt(j.tamanho_final)} · expira em ${data(j.expira)}</div>` : '';
+  const aberto = ['baixando','erro'].includes(j.status) ? 'open' : '';
+  return `<div class="card">
+    <div class="job-topo"><div><span class="job-nome">${esc(j.nome)}</span>
+      <span class="sub"> · ${ok}/${j.itens.length} arquivos · ${data(j.criado)}</span></div>
+      <span class="selo ${j.status}">${ROTULO[j.status]||j.status}</span></div>
+    ${j.mensagem?`<div class="msg">${esc(j.mensagem)}</div>`:''}
+    ${link}
+    <details ${aberto}><summary>Arquivos</summary>${j.itens.map((i,idx)=>itemHtml(j.id,i,idx)).join('')}</details>
+    <div class="acoes">${botoes.join('')}</div></div>`;
+}
+
+const abertos = new Set();
+async function atualizar(){
+  try{
+    const r = await fetch('api/jobs'); if(!r.ok) return;
+    const d = await r.json();
+    document.getElementById('disco').textContent = 'Espaço livre: '+fmt(d.livre);
+    const el = document.getElementById('jobs');
+    if(document.activeElement && el.contains(document.activeElement) && document.activeElement.tagName==='INPUT') return;
+    el.querySelectorAll('details').forEach((det,k)=>{ const id=det.closest('.card').dataset.id; if(id){ det.open?abertos.add(id):abertos.delete(id);} });
+    el.innerHTML = d.jobs.length ? d.jobs.map(jobHtml).join('') : '<p class="sub" style="margin-top:20px">Nenhum download ainda.</p>';
+    el.querySelectorAll('.card').forEach((c,k)=>{ c.dataset.id=d.jobs[k].id; if(abertos.has(d.jobs[k].id)) c.querySelector('details').open=true; });
+  }catch(e){}
+}
+
+async function acao(id, a){
+  if(a==='excluir' && !confirm('Excluir este download e todos os arquivos dele?')) return;
+  await fetch(`jobs/${id}/${a}`, {method:'POST'});
+  atualizar();
+}
+
+function copiar(btn, txt){
+  navigator.clipboard?.writeText(txt).then(()=>{ btn.textContent='Copiado!'; setTimeout(()=>btn.textContent='Copiar',1500); });
+}
+
+document.getElementById('enviar').onclick = async () => {
+  const erro = document.getElementById('erro'); erro.textContent = '';
+  const r = await fetch('jobs', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({
+    links: document.getElementById('links').value,
+    nome: document.getElementById('nome').value,
+    senha: document.getElementById('senha').value,
+    apagar_partes: document.getElementById('apagar').checked
+  })});
+  const d = await r.json();
+  if(!r.ok){ erro.textContent = d.erro || 'Erro'; return; }
+  ['links','nome','senha'].forEach(id => document.getElementById(id).value='');
+  atualizar();
+};
+
+atualizar();
+setInterval(atualizar, 2000);
+</script>
+</body>
+</html>
