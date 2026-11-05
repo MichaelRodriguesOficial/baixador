@@ -1,0 +1,72 @@
+name: Teste da imagem
+
+# Roda depois de cada publicação da imagem e pode ser disparado à mão.
+# Baixa a imagem SEM login (confirma que o pacote é público), sobe o container
+# e faz um download real de um arquivo 7z em partes até gerar o link.
+
+on:
+  workflow_run:
+    workflows: ["Imagem Docker"]
+    types: [completed]
+  push:
+    branches: [main]
+    paths: [".github/workflows/teste.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IMAGEM: ghcr.io/michaelrodriguesoficial/baixador:latest
+
+jobs:
+  testar:
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar a imagem sem login (confirma que é pública)
+        run: |
+          docker logout ghcr.io || true
+          docker pull "$IMAGEM"
+
+      - name: Subir o container
+        run: |
+          docker run -d --name baixador --network host -e APP_PASSWORD=teste "$IMAGEM"
+          for i in $(seq 30); do curl -s -o /dev/null http://127.0.0.1:8080/ && break; sleep 1; done
+
+      - name: Painel exige login
+        run: |
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/)" = 401
+          test "$(curl -s -o /dev/null -w '%{http_code}' -u admin:teste http://127.0.0.1:8080/)" = 200
+          echo "Sem senha: 401 | Com senha: 200"
+
+      - name: Baixar, juntar e descompactar um arquivo em partes
+        run: |
+          mkdir -p srv src/pasta
+          head -c 3000000 /dev/urandom > src/pasta/video.bin
+          (cd src && 7z a -v1m ../srv/teste.7z pasta > /dev/null)
+          ls -la srv
+          (cd srv && python3 -m http.server 9000 > /dev/null 2>&1 &)
+          sleep 1
+
+          LINKS=$(ls srv | sort | sed 's#^#http://127.0.0.1:9000/#' \
+            | python3 -c 'import sys,json; print(json.dumps({"links": sys.stdin.read(), "nome": "Teste"}))')
+          curl -sf -u admin:teste -H 'Content-Type: application/json' -d "$LINKS" http://127.0.0.1:8080/jobs
+
+          for i in $(seq 60); do
+            S=$(curl -s -u admin:teste http://127.0.0.1:8080/api/jobs \
+              | python3 -c 'import sys,json; j=json.load(sys.stdin)["jobs"][0]; print(j["status"], j["link"] or "-", j["mensagem"])')
+            echo "$S"
+            case "$S" in pronto*|erro*) break;; esac
+            sleep 2
+          done
+
+          set -- $S
+          test "$1" = pronto
+          curl -sf -o baixado.bin "$2/arquivo/pasta/video.bin"
+          cmp baixado.bin src/pasta/video.bin
+          echo "Arquivo extraído e baixado pelo link é idêntico ao original"
+
+      - name: Logs do container
+        if: always()
+        run: docker logs baixador || true
