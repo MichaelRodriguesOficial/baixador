@@ -146,7 +146,7 @@ figcaption{font-size:15px;color:var(--tinta-suave);margin-top:10px}
 .copiar:hover{background:#3D4860}
 .bloco + .bloco{margin-top:16px}
 
-.notas{display:grid;grid-template-columns:repeat(3,1fr);gap:32px}
+.notas{display:grid;grid-template-columns:repeat(2,1fr);gap:32px 48px}
 .notas h3{font-size:21px;margin:0 0 6px;font-stretch:85%}
 .notas p{margin:0;font-size:16px;color:var(--tinta-suave)}
 
@@ -243,7 +243,7 @@ footer .miolo{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap
     <h2>Como funciona</h2>
     <p class="intro">Você só cola os links. O resto acontece no servidor, mesmo com o navegador fechado.</p>
     <ol class="passos">
-      <li><h3>Cole os links</h3><p>Um por linha, quantos quiser. Se o compactado tiver senha, informe junto.</p></li>
+      <li><h3>Cole os links</h3><p>Um por linha, quantos quiser. Se o compactado tiver senha ou o site pedir login, informe junto.</p></li>
       <li><h3>Baixa um por vez</h3><p>Na ordem da lista. Se a conexão cair, tenta de novo e continua do ponto em que parou.</p></li>
       <li><h3>Junta e descompacta</h3><p>Reconhece as partes de um mesmo arquivo, extrai tudo e apaga as partes para liberar espaço.</p></li>
       <li><h3>Entrega o link</h3><p>Uma página com cada arquivo e um botão para baixar tudo em .zip. Depois do prazo, os arquivos são apagados.</p></li>
@@ -337,8 +337,9 @@ docker compose pull &amp;&amp; docker compose up -d</pre>
   <div class="miolo">
     <h2>Bom saber</h2>
     <div class="notas" style="margin-top:36px">
-      <div><h3>Só links diretos</h3><p>O link precisa iniciar o download ao ser aberto. Se ele abrir uma página com botão, contador ou captcha, o item fica marcado com erro.</p></div>
+      <div><h3>Só links diretos</h3><p>O link precisa iniciar o download ao ser aberto. O botão Testar links confere cada um antes e diz o motivo quando algum não vai funcionar.</p></div>
       <div><h3>Acesso de fora</h3><p>Coloque atrás de um proxy reverso com HTTPS (Nginx, aaPanel, Traefik) e preencha <code>PUBLIC_URL</code> com o endereço público.</p></div>
+      <div><h3>Sessão do navegador</h3><p>Link que só abre com você logado? Cole os cookies exportados do navegador. Eles valem só para aquele download e são apagados ao final.</p></div>
       <div><h3>Onde ficam os arquivos</h3><p>Tudo vai para a pasta <code>./data</code>. Cada download tem um prazo e é apagado sozinho quando o prazo acaba.</p></div>
     </div>
   </div>

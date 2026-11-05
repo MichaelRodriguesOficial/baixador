@@ -22,6 +22,8 @@ Fila de downloads self-hosted em Docker: baixa uma lista de links um de cada vez
 - **Continua de onde parou:** se a conexão cair ou o container reiniciar, o download retoma do ponto em que estava.
 - **Junta e descompacta:** reconhece as partes de um mesmo arquivo, extrai tudo e, se você quiser, apaga as partes para liberar espaço.
 - **Arquivos com senha:** informe a senha junto com os links.
+- **Sessão do navegador:** para links que só abrem com você logado, cole os cookies exportados do navegador.
+- **Testar links:** confere cada link antes de baixar e diz o motivo quando algum não vai funcionar.
 - **Link temporário:** ao terminar, gera uma página com cada arquivo e um botão **Baixar tudo (.zip)**. O zip é montado na hora do download e não ocupa espaço extra no disco.
 - **Limpeza automática:** quando o prazo do link acaba, os arquivos são apagados. O prazo pode ser renovado pelo painel.
 
@@ -74,6 +76,28 @@ docker run -d --name baixador --restart unless-stopped -p 8080:8080 \
 
 Todos os dados ficam no volume `/data`.
 
+## 🍪 Sessão do navegador
+
+Alguns links funcionam no navegador porque você está logado no site. O container não tem essa sessão e recebe `403 acesso negado`. Para resolver:
+
+1. Instale a extensão **Get cookies.txt LOCALLY** (Chrome, Edge ou Firefox).
+2. Abra o site já logado, clique na extensão e use **Copy**.
+3. No painel, abra **Sessão do navegador** e cole no campo **Cookies**.
+
+Também aceita o JSON exportado pelo Cookie-Editor ou o cabeçalho `Cookie: nome=valor; ...`. Os cookies valem só para aquele download, não aparecem no painel e são apagados do disco quando o download termina.
+
+> Sites protegidos por verificação anti-robô (Cloudflare Turnstile, captcha) costumam amarrar a sessão ao navegador e ao IP de quem passou pela verificação. Nesses casos os cookies não funcionam a partir do servidor, e o Baixador não tenta contornar essa proteção.
+
+## 🩺 Testar links
+
+O botão **Testar links** consulta cada link sem baixar e mostra nome, tamanho e se o download pode ser retomado. Quando um link não vai funcionar, ele mostra o motivo:
+
+| Resultado | O que fazer |
+|---|---|
+| `HTTP 401/403 - acesso negado` | O site exige sua sessão: use a **Sessão do navegador** |
+| `O link abriu uma página` | O link leva a uma página com botão, não ao arquivo. Inicie o download no navegador e copie o link real na lista de downloads (`Ctrl+J`) |
+| `HTTP 404/410` | Arquivo não existe mais ou o link expirou |
+
 ## 🔗 A página do link
 
 <p align="center"><img src="docs/compartilhar.png" alt="Página do link com os arquivos" width="620"></p>
@@ -82,7 +106,7 @@ O painel é protegido por usuário e senha. A página do link (`/s/...`) não pe
 
 ## 💡 Bom saber
 
-- **Só links diretos.** O link precisa iniciar o download ao ser aberto. Se ele abrir uma página com botão, contador ou captcha, o item é marcado com erro e mostra o motivo.
+- **Só links diretos.** O link precisa iniciar o download ao ser aberto. Se ele abrir uma página com botão, contador ou captcha, o item é marcado com erro e mostra o motivo. Use **Testar links** para conferir antes.
 - **Acesso de fora da rede.** Coloque o container atrás de um proxy reverso com HTTPS (Nginx, aaPanel, Traefik) e preencha `PUBLIC_URL`.
 - **Espaço em disco.** O painel mostra o espaço livre. Deixe marcada a opção de apagar as partes para não ocupar o dobro do espaço.
 

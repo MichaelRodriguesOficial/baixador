@@ -1,5 +1,6 @@
 """Baixador: baixa uma lista de links (um por vez), descompacta e gera link temporario."""
 
+import html
 import json
 import logging
 import os
@@ -82,6 +83,85 @@ def carregar():
     salvar()
 
 
+# --------------------------------------------------------------------------- sessao do navegador
+
+def aplicar_cookies(sessao: requests.Session, texto: str) -> int:
+    """Aceita cookies.txt (Netscape), JSON (Cookie-Editor/EditThisCookie) ou o cabecalho Cookie."""
+    texto = (texto or "").strip()
+    if not texto:
+        return 0
+    if texto[0] in "[{":
+        try:
+            dados = json.loads(texto)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"JSON de cookies inválido: {e}") from e
+        if isinstance(dados, dict):
+            dados = dados.get("cookies", [dados])
+        n = 0
+        for c in dados:
+            if isinstance(c, dict) and "name" in c and "value" in c:
+                sessao.cookies.set(c["name"], str(c["value"]), domain=c.get("domain", ""), path=c.get("path") or "/")
+                n += 1
+        if not n:
+            raise ValueError("Nenhum cookie encontrado no JSON (esperado: lista com name e value).")
+        return n
+
+    linhas = [l.rstrip("\r") for l in texto.splitlines() if l.strip()]
+    netscape = [l for l in linhas if l.count("\t") >= 6]
+    if netscape:
+        n = 0
+        for l in netscape:
+            if l.startswith("#HttpOnly_"):
+                l = l[len("#HttpOnly_"):]
+            elif l.startswith("#"):
+                continue
+            dominio, _, caminho, _, _, nome, valor = l.split("\t")[:7]
+            sessao.cookies.set(nome, valor, domain=dominio, path=caminho or "/")
+            n += 1
+        return n
+
+    cabecalho = texto.split(":", 1)[1] if texto.lower().startswith("cookie:") else texto
+    cabecalho = " ".join(cabecalho.split())
+    if "=" not in cabecalho:
+        raise ValueError("Formato de cookies não reconhecido. Use cookies.txt, JSON ou o cabeçalho Cookie (nome=valor; ...).")
+    sessao.headers["Cookie"] = cabecalho
+    return cabecalho.count("=")
+
+
+def montar_sessao(cookies: str = "", referer: str = "") -> requests.Session:
+    sessao = requests.Session()
+    sessao.headers["User-Agent"] = UA
+    if referer:
+        sessao.headers["Referer"] = referer.strip()
+    aplicar_cookies(sessao, cookies)
+    return sessao
+
+
+def titulo_da_pagina(resp) -> str:
+    try:
+        trecho = next(resp.iter_content(65536), b"")[:65536].decode("utf-8", "ignore")
+        m = re.search(r"<title[^>]*>(.*?)</title>", trecho, re.I | re.S)
+        return " ".join(html.unescape(m.group(1)).split())[:90] if m else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def motivo_pagina(resp) -> str:
+    titulo = titulo_da_pagina(resp)
+    return ("O link abriu uma página" + (f' ("{titulo}")' if titulo else "") +
+            ", não o arquivo. Abra no navegador, inicie o download e copie o link real "
+            "na lista de downloads (Ctrl+J).")
+
+
+def motivo_http(codigo: int) -> str:
+    if codigo in (401, 403):
+        return (f"HTTP {codigo} - acesso negado. Se no navegador funciona, o site exige sua sessão: "
+                "cole os cookies do navegador em 'Sessão do navegador'.")
+    if codigo in (404, 410):
+        return f"HTTP {codigo} - arquivo não encontrado ou link expirado."
+    return f"HTTP {codigo}"
+
+
 # --------------------------------------------------------------------------- download
 
 def nome_do_arquivo(resp, url_original):
@@ -112,7 +192,7 @@ def nome_unico(job, item, nome):
     return f"{base}_{n}{ext}"
 
 
-def _baixar_uma_vez(job, item, destino: Path):
+def _baixar_uma_vez(sessao, job, item, destino: Path):
     item["status"] = "baixando"
     inicio = 0
     final = parcial = None
@@ -124,20 +204,18 @@ def _baixar_uma_vez(job, item, destino: Path):
         if parcial.exists():
             inicio = parcial.stat().st_size
 
-    headers = {"User-Agent": UA}
-    if inicio:
-        headers["Range"] = f"bytes={inicio}-"
+    headers = {"Range": f"bytes={inicio}-"} if inicio else {}
 
-    with requests.get(item["url"], headers=headers, stream=True,
-                      timeout=(20, 120), allow_redirects=True) as r:
+    with sessao.get(item["url"], headers=headers, stream=True,
+                    timeout=(20, 120), allow_redirects=True) as r:
         if r.status_code == 416 and inicio:  # ja estava completo
             parcial.replace(final)
             return
         if r.status_code in (401, 403, 404, 410):
-            raise LinkInvalido(f"HTTP {r.status_code} - link inválido, expirado ou sem permissão")
+            raise LinkInvalido(motivo_http(r.status_code))
         r.raise_for_status()
         if "text/html" in r.headers.get("Content-Type", "").lower():
-            raise LinkInvalido("O link abriu uma página (HTML), não um arquivo. Use um link direto.")
+            raise LinkInvalido(motivo_pagina(r))
 
         if not item["nome"]:
             item["nome"] = nome_unico(job, item, nome_do_arquivo(r, item["url"]))
@@ -165,13 +243,13 @@ def _baixar_uma_vez(job, item, destino: Path):
     parcial.replace(final)
 
 
-def baixar(job, item, destino: Path):
+def baixar(sessao, job, item, destino: Path):
     ultimo = None
     for tentativa in range(1, TENTATIVAS + 1):
         if job["cancelar"]:
             raise Cancelado()
         try:
-            _baixar_uma_vez(job, item, destino)
+            _baixar_uma_vez(sessao, job, item, destino)
             item["status"], item["erro"] = "ok", None
             salvar()
             return
@@ -270,9 +348,10 @@ def processar(job):
     saida.mkdir(parents=True, exist_ok=True)
 
     atualizar(job, status="baixando", mensagem="")
+    sessao = montar_sessao(job.get("cookies", ""), job.get("referer", ""))
     for item in job["itens"]:
         if item["status"] != "ok":
-            baixar(job, item, download)
+            baixar(sessao, job, item, download)
 
     falhas = [i for i in job["itens"] if i["status"] != "ok"]
     if falhas:
@@ -284,7 +363,7 @@ def processar(job):
         shutil.rmtree(download, ignore_errors=True)
 
     agora = time.time()
-    atualizar(job, status="pronto", mensagem="", concluido=agora,
+    atualizar(job, status="pronto", mensagem="", concluido=agora, cookies="", referer="",
               expira=agora + LINK_TTL_HOURS * 3600,
               token=job.get("token") or secrets.token_urlsafe(18),
               tamanho_final=tamanho_pasta(saida))
@@ -355,28 +434,40 @@ def api_jobs():
     with lock:
         lista = []
         for j in sorted(jobs.values(), key=lambda j: j["criado"], reverse=True):
-            d = {k: v for k, v in j.items() if k not in ("senha", "token")}
+            d = {k: v for k, v in j.items() if k not in ("senha", "token", "cookies", "referer")}
+            d["com_sessao"] = bool(j.get("cookies"))
             d["link"] = f"{base_url()}/s/{j['token']}" if j.get("token") and j["status"] == "pronto" else None
             lista.append(d)
     return jsonify(jobs=lista, livre=shutil.disk_usage(DATA_DIR).free)
+
+
+def ler_links(texto):
+    links = [l.strip() for l in (texto or "").splitlines()]
+    links = [l for l in links if l and not l.startswith("#")]
+    if not links:
+        raise ValueError("Cole pelo menos um link.")
+    invalidos = [l for l in links if not l.lower().startswith(("http://", "https://"))]
+    if invalidos:
+        raise ValueError(f"Linha inválida (precisa começar com http): {invalidos[0][:80]}")
+    return links
 
 
 @app.post("/jobs")
 @protegido
 def criar_job():
     dados = request.get_json(force=True)
-    links = [l.strip() for l in (dados.get("links") or "").splitlines()]
-    links = [l for l in links if l and not l.startswith("#")]
-    invalidos = [l for l in links if not l.lower().startswith(("http://", "https://"))]
-    if not links:
-        return jsonify(erro="Cole pelo menos um link."), 400
-    if invalidos:
-        return jsonify(erro=f"Linha inválida (precisa começar com http): {invalidos[0][:80]}"), 400
+    try:
+        links = ler_links(dados.get("links"))
+        montar_sessao(dados.get("cookies", ""), dados.get("referer", ""))  # valida o formato
+    except ValueError as e:
+        return jsonify(erro=str(e)), 400
     job = {
         "id": uuid.uuid4().hex[:10],
         "nome": (dados.get("nome") or "").strip() or f"Download {time.strftime('%d/%m %H:%M')}",
         "senha": dados.get("senha") or "",
         "apagar_partes": bool(dados.get("apagar_partes", True)),
+        "cookies": (dados.get("cookies") or "").strip(),
+        "referer": (dados.get("referer") or "").strip(),
         "status": "fila", "mensagem": "", "criado": time.time(),
         "concluido": None, "expira": None, "token": None, "cancelar": False,
         "tamanho_final": None,
@@ -388,6 +479,41 @@ def criar_job():
         salvar()
     fila.put(job["id"])
     return jsonify(ok=True, id=job["id"])
+
+
+def diagnosticar(sessao, url):
+    res = {"url": url, "ok": False, "nome": None, "tamanho": None, "retoma": False, "motivo": None, "http": None}
+    try:
+        with sessao.get(url, headers={"Range": "bytes=0-0"}, stream=True,
+                        timeout=(15, 30), allow_redirects=True) as r:
+            res["http"] = r.status_code
+            ctype = r.headers.get("Content-Type", "").lower()
+            if r.status_code >= 400:
+                res["motivo"] = motivo_http(r.status_code)
+            elif "text/html" in ctype:
+                res["motivo"] = motivo_pagina(r)
+            else:
+                res["ok"] = True
+                res["nome"] = nome_do_arquivo(r, url)
+                res["retoma"] = r.status_code == 206
+                m = re.search(r"/(\d+)$", r.headers.get("Content-Range", ""))
+                tam = m.group(1) if m else r.headers.get("Content-Length", "")
+                res["tamanho"] = int(tam) if tam.isdigit() and (m or r.status_code == 200) else None
+    except requests.RequestException as e:
+        res["motivo"] = f"Não conectou: {e.__class__.__name__}"
+    return res
+
+
+@app.post("/testar")
+@protegido
+def testar_links():
+    dados = request.get_json(force=True)
+    try:
+        links = ler_links(dados.get("links"))
+        sessao = montar_sessao(dados.get("cookies", ""), dados.get("referer", ""))
+    except ValueError as e:
+        return jsonify(erro=str(e)), 400
+    return jsonify(resultados=[diagnosticar(sessao, u) for u in links[:50]])
 
 
 def _job(jid):

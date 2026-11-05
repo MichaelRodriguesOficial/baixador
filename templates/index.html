@@ -43,6 +43,20 @@ button.perigo{background:transparent;color:var(--verm);border:1px solid #5a2a2d}
 .link{display:flex;gap:8px;margin-top:12px}
 .link input{font-family:ui-monospace,Consolas,monospace;font-size:13px}
 details summary{cursor:pointer;color:var(--sub);font-size:13px;margin-top:10px}
+.sessao{margin-top:14px;border:1px solid var(--borda);border-radius:8px;padding:0 14px}
+.sessao>summary{font-size:14px;color:var(--txt);padding:12px 0;margin:0}
+.sessao[open]{padding-bottom:14px}
+.sessao textarea{min-height:90px}
+.ajuda{font-size:13px;color:var(--sub);margin:6px 0 12px}
+.ajuda code{background:#0c0e12;padding:1px 5px;border-radius:4px}
+#teste{margin-top:14px}
+.res{display:flex;gap:10px;padding:9px 0;border-top:1px solid var(--borda);font-size:13px}
+.res:first-child{border-top:0}
+.res .ic{font-weight:700;width:16px;flex:none}
+.res .ic.ok{color:var(--verde)} .res .ic.no{color:var(--verm)}
+.res .u{word-break:break-all;color:var(--sub)}
+.res .d{margin-top:2px}
+.tag{font-size:11px;padding:1px 7px;border-radius:99px;background:#2a2f3a;color:var(--sub);margin-left:6px}
 </style>
 </head>
 <body>
@@ -60,9 +74,19 @@ details summary{cursor:pointer;color:var(--sub);font-size:13px;margin-top:10px}
       <div><label for="senha">Senha do arquivo compactado (se tiver)</label><input type="password" id="senha" autocomplete="off"></div>
     </div>
     <label class="check"><input type="checkbox" id="apagar" checked> Apagar as partes compactadas depois de descompactar (economiza espaço)</label>
+    <details class="sessao" id="sessao-box">
+      <summary>Sessão do navegador (para links que só abrem com você logado)</summary>
+      <label for="cookies">Cookies</label>
+      <textarea id="cookies" spellcheck="false" placeholder="Cole aqui o conteúdo do cookies.txt, o JSON exportado ou o cabeçalho Cookie"></textarea>
+      <p class="ajuda">Instale a extensão <b>Get cookies.txt LOCALLY</b> (Chrome, Edge ou Firefox), abra o site já logado, clique na extensão e use <b>Copy</b>. Também aceita o JSON do Cookie-Editor ou o cabeçalho <code>Cookie: nome=valor; ...</code>. Os cookies valem só para este download e são apagados quando ele termina.</p>
+      <label for="referer">Referer (opcional)</label>
+      <input type="text" id="referer" placeholder="Página de onde o link veio, se o site exigir">
+    </details>
     <div class="acoes" style="align-items:center">
-      <button id="enviar">Adicionar à fila</button><span id="erro"></span>
+      <button id="enviar">Adicionar à fila</button>
+      <button class="sec" id="testar">Testar links</button><span id="erro"></span>
     </div>
+    <div id="teste"></div>
     <p class="sub" style="margin:12px 0 0">Os links gerados valem {{ ttl|int }}h. Depois disso os arquivos são apagados sozinhos.</p>
   </div>
 
@@ -108,7 +132,7 @@ function jobHtml(j){
   const aberto = ['baixando','erro'].includes(j.status) ? 'open' : '';
   return `<div class="card">
     <div class="job-topo"><div><span class="job-nome">${esc(j.nome)}</span>
-      <span class="sub"> · ${ok}/${j.itens.length} arquivos · ${data(j.criado)}</span></div>
+      <span class="sub"> · ${ok}/${j.itens.length} arquivos · ${data(j.criado)}</span>${j.com_sessao?'<span class="tag">com sessão</span>':''}</div>
       <span class="selo ${j.status}">${ROTULO[j.status]||j.status}</span></div>
     ${j.mensagem?`<div class="msg">${esc(j.mensagem)}</div>`:''}
     ${link}
@@ -140,18 +164,35 @@ function copiar(btn, txt){
   navigator.clipboard?.writeText(txt).then(()=>{ btn.textContent='Copiado!'; setTimeout(()=>btn.textContent='Copiar',1500); });
 }
 
+const val = id => document.getElementById(id).value;
+function dadosForm(){
+  return {links: val('links'), nome: val('nome'), senha: val('senha'), cookies: val('cookies'),
+          referer: val('referer'), apagar_partes: document.getElementById('apagar').checked};
+}
+
 document.getElementById('enviar').onclick = async () => {
   const erro = document.getElementById('erro'); erro.textContent = '';
-  const r = await fetch('jobs', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({
-    links: document.getElementById('links').value,
-    nome: document.getElementById('nome').value,
-    senha: document.getElementById('senha').value,
-    apagar_partes: document.getElementById('apagar').checked
-  })});
+  const r = await fetch('jobs', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(dadosForm())});
   const d = await r.json();
   if(!r.ok){ erro.textContent = d.erro || 'Erro'; return; }
-  ['links','nome','senha'].forEach(id => document.getElementById(id).value='');
+  ['links','nome','senha','cookies','referer'].forEach(id => document.getElementById(id).value='');
+  document.getElementById('teste').innerHTML = '';
   atualizar();
+};
+
+document.getElementById('testar').onclick = async (ev) => {
+  const bt = ev.currentTarget, erro = document.getElementById('erro'), out = document.getElementById('teste');
+  erro.textContent = ''; bt.disabled = true; bt.textContent = 'Testando...'; out.innerHTML = '';
+  try{
+    const r = await fetch('testar', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(dadosForm())});
+    const d = await r.json();
+    if(!r.ok){ erro.textContent = d.erro || 'Erro'; return; }
+    const bons = d.resultados.filter(x => x.ok).length;
+    out.innerHTML = `<div class="sub" style="margin-bottom:4px">${bons} de ${d.resultados.length} link(s) prontos para baixar</div>` +
+      d.resultados.map(x => `<div class="res"><span class="ic ${x.ok?'ok':'no'}">${x.ok?'✔':'✖'}</span><div>
+        <div class="u">${esc(x.url)}</div>
+        <div class="d">${x.ok ? `<b>${esc(x.nome)}</b> · ${fmt(x.tamanho)}${x.retoma?' · retoma se cair':''}` : esc(x.motivo)}</div></div></div>`).join('');
+  } finally { bt.disabled = false; bt.textContent = 'Testar links'; }
 };
 
 atualizar();
